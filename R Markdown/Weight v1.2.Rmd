@@ -1,0 +1,74 @@
+---
+title: "Linear Mixed-Effects Regression"
+author: "Zhengxiao Wei, Eleah Stringer"
+date: "June 23 - September 30, 2023 (v1.2)"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(nlme)) {install.packages("nlme")}
+```
+
+
+# 1. Data preparation 
+
+The longitudinal data are from an experiment to study the effect of intermittent fasting on the weights of 15 participants, each measured weekly during the intervention.
+
+\scriptsize
+```{r desc, warning=F}
+df <- dat <- read.csv("~/Documents/IF/dataset/IFStudy-Weights_DATA_2023-05-25_0957.csv")
+str(df)
+```
+\normalsize
+``````{r desc.contd, warning=F}
+dat$sunday_weight <- as.numeric(dat$sunday_weight)
+dat <- na.omit(dat) #exclude rows that have missing values (blank, "N/A", NA) in any column
+dat <- dat[,c(1,5,6)]
+colnames(dat) <- c("ID", "Week", "Weight")
+dat$ID <- factor(dat$ID)
+table(dat$ID) #number of observations for each subject
+dat <- droplevels(subset(dat, !(ID %in% c("IF-007","IF-014")))) #exclude insufficient data
+dat$Week <- dat$Week - 1 #start from Week 0
+str(dat)
+```
+
+
+\newpage
+# 2. Modeling
+
+In a linear mixed-effects regression, each subject has its intercept and slope (i.e., random intercepts and random slopes).
+
+```{r nlme}
+fit <- nlme::lme(fixed=Weight ~ Week, 
+                 random=~Week | ID,      #random intercept and slope for each subject
+                 data=dat, method="ML")
+summary(fit)
+```
+
+The $p$-value of .0013 for the random slopes is statistically significant at an alpha level of .01 ($t=-3.257988$, $\textit{df}=213$). Hence, reject the null hypothesis that the `Week` effect is zero.
+
+```{r coef}
+# -0.38742 + c(-1,1)* 1.96 * 0.118913
+nlme::intervals(fit) #95% confidence intervals for the fixed effects
+coef(fit)
+```
+
+
+&nbsp;
+&nbsp;
+
+
+# 3. Summary
+
+A one unit increase in time (a week) is associated with an average weight **loss** of 0.39 lbs (95% confidence interval 0.15-0.62 lbs), according to a longitudinal study of 14 subjects over a minimum of 12 weeks and a maximum of 26 weeks from 2021 to 2022.
+
+When examining the individual fit, IF-010, on the contrary, was gaining weight during the intervention.
+

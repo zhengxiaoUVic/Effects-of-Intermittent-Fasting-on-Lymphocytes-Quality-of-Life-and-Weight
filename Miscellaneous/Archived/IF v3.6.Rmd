@@ -1,0 +1,332 @@
+---
+title: "Multilevel Modeling for Longitudinal Data"
+author: "Zhengxiao Wei, Eleah Stringer"
+date: "May 25 - October 22, 2023 (v3.6)"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-3em} 
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(lattice)) {install.packages("lattice")}
+if(!require(nlme)) {install.packages("nlme")}
+if(!require(lme4)) {install.packages("lme4")}
+if(!require(merTools)) {install.packages("merTools")}
+if(!require(car)) {install.packages("car")}
+if(!require(BayesFactor)) {install.packages("BayesFactor")}
+```
+
+
+# 1. Data description 
+
+The longitudinal data are from an experiment to study the effect of intermittent fasting (IF) on the lymphocyte measurements of 15 participants, each of whom was repeatedly measured before, during, and after the intervention. The data set (long format) consists of six columns:
+
+* **LYMP** - [numeric] lymphocyte count ($\times10^9$/L); lower values usually correspond to better outcomes;
+
+* **ATG** - [numeric] relative net LC3-II expression; higher levels are associated with increased autophagy;
+
+* **ID** - [factor] participant identifier; 15 levels;
+
+* **Time** - [numeric] centered time point, with a frequency of 30 days, treating the **last** pretest as Month 0;
+
+* **Time_Within_Phase** - [numeric] time point within each phase, starting from Month 0;
+
+* **Phase** - [numeric] treatment identifier; 0 as pretest, 1 as intervention, and 2 as posttest.
+
+
+```{r EDA, fig.width=8, fig.height=4.7}
+df <- read.csv("~/Downloads/IF_v3.1.csv", stringsAsFactors=T)
+df$Phase <- factor(df$Phase)
+lattice::xyplot(LYMP ~ Time | ID, data=df, group=Phase, type=c("p","r"), layout=c(5,3),
+                index.cond=list(c(6:9,11,10,12:15,1:5)), #change panel order
+                xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+```
+```{r beamer, eval=F, include=F}
+lattice::xyplot(LYMP ~ Time | ID, data=df, group=Phase, type=c("p","r"), layout=c(3,5),
+                index.cond=list(c(11,15,5,
+                                  9,14,4,
+                                  8,13,3,
+                                  7,12,2,
+                                  6,10,1)), #change panel order
+                xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")),
+                sub="Left: \"3+3\"                Center: \"6\"                Right: \"3+1\"") #SAVE 600 900
+```
+
+# 2. Linear mixed-effects regression (Part I)
+
+The hypothesis is that IF can help patients lower their lymphocyte count. The objectives are then to investigate whether (1) the mean responses and (2) the linear slopes of time are statistically different before versus during the intervention.
+
+## 2.1 Using the "*nlme*" package (v 3.1-163)
+
+```{r nlme}
+dat <- df[!is.na(df$LYMP) & df$Phase!=2,] #IF-013 contains one missing value
+
+fit1 <- nlme::lme(fixed=LYMP ~ Phase,
+                  random=~1 | ID,         #random intercept for each subject
+                  data=dat, method="ML")
+summary(fit1)
+```
+
+&nbsp;
+&nbsp;
+
+`~1 | ID` is the random effects part of the model, allowing for the possibility that different subjects have different baseline lymphocyte counts. `LYMP ~ Phase` specifies the fixed effect (as the *aov* and *lm* functions usually do), expecting the dependent variable to be influenced by the categorical treatment identifier.
+
+This \textcolor{blue}{tutorial} model ($\texttt{fit1}$) compares the dependent variable ($\texttt{LYMP}$) between the different phases of the experiment ($\texttt{Phase}$, dummy variable), while controlling for the repeated measures within each subject.
+
+Two methods are available to estimate the coefficients: the restricted maximum likelihood (REML) by default and the maximum likelihood (ML). In a nutshell, ML is generally preferred when comparing models with different fixed effects.
+
+
+\newpage
+```{r nlme.cont}
+fit2 <- nlme::lme(fixed=LYMP ~ Phase * Time, 
+                  random=~Time | ID,      #random intercept and slope for each subject
+                  data=dat, method="ML")
+summary(fit2)
+```
+
+`~Time | ID` adds random slopes for the time variable, which will allow the effect of time to vary across subjects. The interaction term `Phase * Time` allows the slope of the time trend to differ between the phases.
+
+```{r coef}
+(coef.fixed <- coef(summary(fit2))[,"Value"]) #extract fixed effect coefficients
+
+fit2u <- nlme::lme(fixed=LYMP ~ Phase * Time, random=~Phase * Time | ID,
+                   data=dat, method="ML",             #maximal random effects
+                   control=nlme::lmeControl(opt="optim", optCtrl=list(maxit=1e5))) 
+                                            #allows more iterations for convergence
+fit3u <- nlme::lme(fixed=LYMP ~ Phase + Time, random=~Phase + Time | ID,
+                   data=dat, method="ML",
+                   control=nlme::lmeControl(opt="optim", optCtrl=list(maxit=1e5)))
+```
+
+Furthermore, `~Phase * Time | ID` specifies a model (\texttt{fit2u}) with an interaction term as a random effect. This specification would allow the intercept, the slope for time, the slope for phase, and the slope for the interaction between time and phase to vary across subjects. However, please note that this model is quite complex and may require a large amount of data to estimate reliably. The `boundary (singular) fit` warning indicates that the estimated variance-covariance matrix is non-positive definite.
+
+&nbsp;
+&nbsp;
+
+```{r ceof2}
+# coef(fit2u) #all coefficients vary across subjects
+coef(fit2)    #the intercept and the slope for time vary across subjects
+```
+
+The function *coef* is extracting individual fitted intercept and slope in each phase. For example, IF-002 has a lymphocyte baseline of 76.64484 and a growth rate of 1.12003288 before the intervention (`Phase==0`); and a lymphocyte baseline of $76.64484+1.0489=77.69374$ and a growth rate of $1.12003288-0.05163969=1.06839319$ during the intervention (`Phase==1`). \textcolor{red}{IF-017, 019, and 022 have a negative growth rate.}
+
+These values are a combination of the fixed and random effects. Use `coef` and `summary` to obtain the coefficients of the fixed effects, which are the mean fitted intercept and slope of all 15 subjects. On Page 3, the mean lymphocyte baseline is 61.57578172, and the mean growth rate is 1.67659222 before the intervention. The mean lymphocyte baseline becomes $61.57578172+1.04890005=62.62468177$, and the mean growth rate becomes $1.67659222-0.05163969=1.62495253$ during the intervention.
+
+```{r viz, fig.width=8, fig.height=4.5}
+par(mar=c(5,5,5,5))
+plot(1, xlim=c(0, 12), ylim=c(55, 80), main="Fitted Linear Regression Models (fit2)",
+     type="n", xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+abline(a=coef.fixed[1], b=coef.fixed[3], lty=2, lwd=2)
+abline(a=coef.fixed[1]+coef.fixed[2], b=coef.fixed[3]+coef.fixed[4], col="red", lwd=2)
+legend("bottomright", c("Pretest", "Intervention"),
+       col=c("black","red"), lty=c(2,1), lwd=2, bty="n")
+text(1.5,75,bquote(hat(italic(Y)) == 
+                   .(format(coef.fixed[1],digits=4,nsmall=2)) 
+                   + .(round(coef.fixed[3],2)) * italic(x)))
+text(1.5,79,bquote(hat(italic(Y)) == .(round(coef.fixed[1]+coef.fixed[2],2)) 
+                 + .(round(coef.fixed[3]+coef.fixed[4],2)) * italic(x)), col="red")
+```
+
+
+The 95% confidence intervals for the fixed effects.
+
+```{r CI}
+nlme::intervals(fit2)
+```
+
+
+\newpage
+## 2.2 Using the "*lme4*" package (v 1.1-34)
+
+```{r lme4, results="hide", message=F}
+fit1.alt <- lme4::lmer(LYMP ~ Phase + (1 | ID), dat, REML=FALSE) #(same) output omitted
+
+fit2.alt <- lme4::lmer(LYMP ~ Phase * Time + (Time | ID), dat, REML=FALSE)
+
+fit3.alt <- lme4::lmer(LYMP ~ Phase + Time + (Time | ID), dat, REML=FALSE)
+
+fit2u.alt <- lme4::lmer(LYMP ~ Phase * Time + (Phase * Time | ID), dat, REML=F,
+                        control=lme4::lmerControl(optCtrl=list(maxfun=1e5)))
+
+fit3u.alt <- lme4::lmer(LYMP ~ Phase + Time + (Phase + Time | ID), dat, REML=F,
+                        control=lme4::lmerControl(optCtrl=list(maxfun=1e5)))
+```
+```{r CI.contd}
+#95% prediction intervals for each subject at their data points
+head(cbind(dat, merTools::predictInterval(fit2.alt)), 9)
+```
+
+The "*lme4*" package does not provide standard errors for the random effects by default. However, the "*merTools*" package offers functions to help with constructing prediction intervals.
+
+
+## 2.3 Using the "*BayesFactor*" package (v 0.9.12-4.5)
+
+```{r BF.top-down}
+set.seed(277)                      #cf. fit2
+full <-     BayesFactor::lmBF(LYMP~Time*Phase+Time:ID+ID, dat, whichRandom="ID", progress=F)
+
+set.seed(277)                      #cf. fit3
+additive <- BayesFactor::lmBF(LYMP~Time+Phase+Time:ID+ID, dat, whichRandom="ID", progress=F)
+
+additive / full #anecdotal evidence of no interaction effect
+```
+
+See also [Bub, Masson, and van Noordenne (2021, p. 80)](https://doi.org/10.1037/xhp0000876), [van den Bergh et al. (2023)]( https://doi.org/10.1177/25152459231168024), and [Wei, Nathoo, and Masson (2023)](https://osf.io/5dm28/).
+
+\newpage
+## 2.4 Summary
+
+In a linear mixed-effects regression (LMER), each subject has its intercept and slope (i.e., random intercepts and random slopes).
+
+The $p$-value of .9443 for the interaction term in $\texttt{fit2}$ is not statistically significant at an alpha level of .05 ($t=-0.069994$, $\textit{df}=130$). Hence, fail to reject that the linear slopes of time are the same before versus during the intervention.
+
+$\blacktriangleright$ In summary, the mean lymphocyte count continued to increase at the same rate after participants received IF treatment.
+
+If the slope of the time trend is the same across phases, one can remove the interaction term and specify `Phase + Time` as fixed effects (i.e., an additive model).
+
+```{r model}
+fit3 <- nlme::lme(fixed=LYMP ~ Phase + Time, #additive model
+                  random=~Time | ID, 
+                  data=dat, method="ML")
+summary(fit3)
+```
+
+
+\newpage
+# 3. Linear mixed-effects regression (Part II)
+
+Investigate any difference in either (3) autophagy or (4) lymphocyte count between those who fasted for three versus six months.
+
+```{r fast}
+lymphocyte <- df[df$Phase==1, -2]
+autophagy <- df[!is.na(df$ATG) & df$Phase==1, -1] #Excluded IF-007 and 012 (no records)
+fast6 <- paste0("IF-0",c(17,19,20,21,22))
+lymphocyte$Fast <- factor(ifelse(lymphocyte$ID %in% fast6, "Six", "Three"))
+autophagy$Fast <- factor(ifelse(autophagy$ID %in% fast6, "Six", "Three"))
+
+fit.LYMP <- nlme::lme(fixed=LYMP ~ Fast * Time_Within_Phase,
+                      random=~Time_Within_Phase | ID, data=lymphocyte, method="ML",
+                      control=nlme::lmeControl(opt="optim", optCtrl=list(maxit=1e5)))
+summary(fit.LYMP)
+nlme::intervals(fit.LYMP) #95% CI
+lymphocyte$Time_Within_Phase <- factor(lymphocyte$Time_Within_Phase) #non-parsimonious
+set.seed(277)
+full.LYMP <- BayesFactor::lmBF(LYMP~Fast*Time_Within_Phase+Time_Within_Phase:ID+ID,
+                               lymphocyte, whichRandom="ID", progress=F)
+set.seed(277)
+additive.LYMP <- BayesFactor::lmBF(LYMP~Fast+Time_Within_Phase+Time_Within_Phase:ID+ID,
+                                   lymphocyte, whichRandom="ID", progress=F)
+additive.LYMP / full.LYMP #inconclusive
+```
+
+\newpage
+```{r fast.cont}
+fit.ATG <- nlme::lme(fixed=ATG ~ Fast * Time_Within_Phase,
+                     random=~Time_Within_Phase | ID,
+                     data=autophagy, method="ML")
+summary(fit.ATG)
+nlme::intervals(fit.ATG) #95% CI
+autophagy$Time_Within_Phase <- factor(autophagy$Time_Within_Phase) #non-parsimonious 
+set.seed(277)
+full.ATG <- BayesFactor::lmBF(ATG~Fast*Time_Within_Phase+Time_Within_Phase:ID+ID,
+                              autophagy, whichRandom="ID", progress=F)
+set.seed(277)
+additive.ATG <- BayesFactor::lmBF(ATG~Fast+Time_Within_Phase+Time_Within_Phase:ID+ID,
+                                  autophagy, whichRandom="ID", progress=F)
+additive.ATG / full.ATG #anecdotal evidence of no interaction effect
+```
+
+&nbsp;
+&nbsp;
+
+$\blacktriangleright$ The $p$-value of .0468 for the interaction term in $\texttt{fit.LYMP}$ is statistically significant at an alpha level of .05 ($t=2.046875$, $\textit{df}=43$). Hence, reject that the linear slopes of time are the same between the two fasting groups. Participants who fasted for three months showed a higher lymphocyte growth rate than those who fasted for six months during the intervention.
+
+&nbsp;
+
+$\blacktriangleright$ The $p$-value of .1978 for the interaction term in $\texttt{fit.ATG}$ is not statistically significant at an alpha level of .05 ($t=-1.313434$, $\textit{df}=34$). Hence, fail to reject that the linear slopes of time are the same between the two fasting groups. There was no difference between the autophagy values of fasting for three and six months.
+
+
+\newpage
+# 4. Diagnostics
+
+## 4.1 Check for linearity and homoscedasticity
+
+Plot standardized residuals versus fitted values by phase. One should see a random scattering of points if the assumptions are met. Plus, check for influential outliers.
+
+```{r assumption-1, fig.width=6, fig.height=3, fig.align="center"}
+plot(fit3, resid(., type = "p") ~ fitted(.) | Phase, abline=0)
+```
+
+The intervention phase (right panel, `Phase==1`) may witness heteroscedasticity according to the residual plot. Using the `weights` argument, one can incorporate a variance function structure into the model. The variance structure `varIdent(form=~1 | Phase)` allows for different variances for each phase level.
+
+```{r final}
+fit4 <- nlme::lme(fixed=LYMP ~ Phase + Time, 
+                  random=~Time | ID, data=dat, method="ML",
+                  cor=nlme::corCompSymm(),
+                  weights=nlme::varIdent(form=~1 | Phase),
+                  control=nlme::lmeControl(opt="optim", optCtrl=list(maxit=1e5)))
+summary(fit4)
+coef(fit4) #final model
+```
+
+
+## 4.2 Check for normality of the residuals
+
+The residuals should follow a straight line in a QQ plot (Quantile-Quantile plot) if normally distributed.
+
+```{r assumption-2, fig.width=6, fig.height=3.5, fig.align="center"}
+qqnorm(resid(fit4)); qqline(resid(fit4)) # shapiro.test(resid(fit4))
+```
+
+## 4.3 Check for random effects assumptions
+
+Check that the random effects are zero-centered and normally distributed, and have a constant variance. Use `ranef` to extract the random effects from the model and plot histograms.
+
+```{r assumption-3, fig.width=6, fig.height=3.5, fig.align="center"}
+rand.ef <- nlme::ranef(fit4)$Time #15 subjects
+mean(rand.ef)
+
+hist(rand.ef, prob=TRUE, col="white", yaxt="n",
+     ylab="", xlab="Subject-Specific Random Effects (15)", main="")
+lines(density(rand.ef),col="red",lwd=2)
+```
+
+<!-- ## 4.4 Check for multicollinearity -->
+
+<!-- Generally, a variance inflation factor (VIF) value greater than 5 could indicate a collinearity problem. -->
+
+<!-- https://stats.stackexchange.com/questions/621259/linear-mixed-effects-regression-on-longitudinal-data-multicollinearity/621269#621269 -->
+
+<!-- ```{r assumption-4} -->
+<!-- #Note that the vif() function in the "car" R package may not work directly with lme objects. -->
+<!-- car::vif(lm(LYMP ~ Phase + Time, data=dat)) -->
+<!-- ``` -->
+
+
+<!-- # Linear mixed-effects regression within phases -->
+
+<!-- ```{r LMER.wi} -->
+<!-- fit.b4 <- nlme::lme(fixed=LYMP ~ Time,  -->
+<!--                     random=~Time | ID,  -->
+<!--                     data=subset(dat, Phase==0), method="ML") -->
+<!-- summary(fit.b4) -->
+<!-- coef(fit.b4) -->
+
+<!-- fit.IF <- nlme::lme(fixed=LYMP ~ Time,  -->
+<!--                     random=~Time | ID,  -->
+<!--                     data=subset(dat, Phase==1), method="ML") -->
+<!-- summary(fit.IF) -->
+<!-- coef(fit.IF) -->
+<!-- ``` -->
+

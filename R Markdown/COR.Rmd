@@ -1,0 +1,94 @@
+---
+title: "Correlation Between Lymphocytes and Autophagy"
+subtitle: "cf. IF v3.7.Rmd"
+author: "Zhengxiao Wei, Farouk S. Nathoo, Julian J. Lum, Eleah Stringer"
+date: "September 2, 2026"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-3em} 
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(lattice)) {install.packages("lattice")}
+if(!require(nlme)) {install.packages("nlme")}
+```
+
+
+# 1. Data description (same as IF v3.7.Rmd p. 1)
+
+The longitudinal data are from an experiment to study the effect of intermittent fasting (IF) on the lymphocyte measurements of 15 participants, each of whom was repeatedly measured before, during, and after the intervention. The data set (long format) consists of six columns:
+
+* **LYMP** - [numeric] lymphocyte count ($\times10^9$/L); lower values usually correspond to better outcomes;
+
+* **ATG** - [numeric] relative net LC3-II expression; higher levels are associated with increased autophagy;
+
+* **ID** - [factor] participant identifier; 15 levels;
+
+* **Time** - [numeric] centered time point, with a frequency of 30 days, treating the **last** pretest as Month 0;
+
+* **Time_Within_Phase** - [numeric] time point within each phase, starting from Month 0;
+
+* **Phase** - [numeric] treatment identifier; 0 as pretest, 1 as intervention, and 2 as posttest.
+
+
+```{r EDA, fig.width=8, fig.height=4.7}
+df <- read.csv("~/Downloads/IF_v3.1.csv", stringsAsFactors=T)
+lattice::xyplot(LYMP ~ Time | ID, data=df, group=Phase, type=c("p","r"), layout=c(5,3),
+                index.cond=list(c(6:9,11,10,12:15,1:5)), #change panel order
+                xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+```
+
+
+\newpage
+# 2. Modeling
+
+The additional study aims to examine the correlation between lymphocyte count and relative net LC3-II expression, using a linear mixed-effects model once again.
+
+Given the small sample, we would report the raw-scale model if its relationship appears reasonably linear and is not dominated by the highest MLC observations. It is simpler and clinically easier to interpret. The log model is preferable if the association clearly flattens at higher counts or the largest counts have excessive leverage.
+
+```{r model}
+dat <- df[!is.na(df$LYMP) & !is.na(df$ATG) & df$Phase==1,] #omit missing values
+dat <- droplevels(dat)
+
+fast6 <- paste0("IF-0",c(17,19,20,21,22)) #cohort definition used in IF-v3.7.Rmd
+dat$Fast <- factor(ifelse(dat$ID %in% fast6, "Six", "Three"))
+
+fit.ATG_LYMP <- nlme::lme(
+  fixed  = ATG ~ LYMP + Time_Within_Phase + Fast,
+  random = ~ 1 | ID, #random intercept for each subject
+  data   = dat,
+  method = "REML"
+)
+
+summary(fit.ATG_LYMP)
+
+coef(fit.ATG_LYMP) #the coefficients across 13 subjects
+nlme::intervals(fit.ATG_LYMP) #the 95% confidence interval for the fixed effect
+```
+
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+
+To examine the association between absolute lymphocyte count and autophagy during the time restricted eating (TRE) intervention, we fitted a linear mixed-effects model with relative net LC3-II expression as the outcome and a participant-specific random intercept. The analysis included 49 observations from 13 participants.
+
+After accounting for time within the intervention phase and TRE cohort, higher lymphocyte counts were associated with lower relative net LC3-II expression, although the confidence interval included zero ($\beta_1=-0.0055$ per $10^9$/L, 95% CI [−0.0116, 0.0005], $t_{34}=-1.85$, $p=0.0725$). Thus, the adjusted analysis suggested a negative association between lymphocyte count and autophagy, but the data did not provide sufficiently precise evidence to conclude that this association differed from zero.
+
+Relative net LC3-II expression decreased significantly over time during the intervention ($\beta_2=-0.0494$ per month, 95% CI [−0.0895, −0.0093], $t_{34}=-2.51$, $p=0.0172$).
+
+The estimated difference between the 3- and 6-month cohorts was small and imprecise ($\beta_3=-0.0505$, 95% CI [−0.4225, 0.3214], $t_{11}=-0.30$, $p=0.7704$).
+

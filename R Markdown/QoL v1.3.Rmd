@@ -1,0 +1,210 @@
+---
+title: "Bayesian Analysis of Repeated-Measures Designs"
+author: "Zhengxiao Wei, Eleah Stringer"
+date: "June 23, 2023 - January 18, 2024 (v1.3)"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(ggplot2)) {install.packages("ggplot2")}
+if(!require(ggrepel)) {install.packages("ggrepel")}
+if(!require(ez)) {install.packages("ez")}
+if(!require(nlme)) {install.packages("nlme")}
+if(!require(BayesFactor)) {install.packages("BayesFactor")}
+```
+
+
+# 1. Data description 
+
+The within-subject data (repeated measures) are from a survey study examining the effect of intermittent fasting (IF) on the quality of life (QoL) scores of 15 participants, each of whom once answered the same 30-question questionnaire before, during, and after the intervention. The data set (long format) consists of seven columns:
+
+* **ID** - [factor] participant identifier; 15 levels;
+
+* **Phase** - [numeric] treatment identifier; 0 as pretest, 1 as intervention, and 2 as posttest;
+
+* **Fast** - [numeric] fasting group identifier;
+\begin{align*}
+&\text{0 as 3 months fasting and 1 month follow-up,} \\
+&\text{1 as 6 months fasting,} \\
+\text{and }&\text{2 as 3 months fasting and 3 months follow-up;}
+\end{align*}
+
+* **Total** - [numeric] total QoL score;
+
+* **Global** - [numeric] global health score;
+
+* **Physical** - [numeric] physical function score;
+
+* **Fatigue** - [numeric] fatigue score.
+
+
+```{r EDA, fig.width=8, fig.height=4}
+invisible(lapply(c("ggplot2", "ggrepel", "BayesFactor"),
+                 library, character.only=T)) #load packages
+
+df <- read.csv("~/Downloads/QoL_v1.1.csv", stringsAsFactors=T)
+df$Phase <- factor(df$Phase, labels=c("Pretest", "Intervention", "Posttest"))
+df$Fast <- factor(df$Fast, labels=c("3 Month Fast + 1 Month Post",
+                                    "6 Month Fast",
+                                    "3 Month Fast + 3 Month Post"))
+df <- na.omit(df)
+ggplot(df, aes(x=Phase, y=Global, group=ID))+
+  geom_point(position=position_dodge(.7))+
+  geom_line(position=position_dodge(.7))+ #jitter to avoid overplotting
+  geom_text_repel(data=subset(df,Phase=="Pretest"), aes(label=ID),
+                  vjust=2, hjust=2, segment.color=NA, size=2, col="red")+
+  xlab("")+ylab("Global Health Score")+
+  ggtitle("Quality of Life Data")+
+  facet_wrap(~Fast, scales="free_x")+
+  theme_classic()
+```
+
+
+# 2. Frequentist: Repeated-measures analysis of variance
+
+A one-way repeated-measures analysis of variance (RM-ANOVA) is a statistical procedure used to determine any significant differences among multiple sets of data measurements (i.e., levels of a single factor), where all measurements are taken on the same set of subjects. Unlike the standard one-way ANOVA, RM-ANOVA can account for the dependence between measurements by further partitioning the within-groups variability into the subject variability `Error: ID` and error variability `Error: ID:Phase`.
+
+Traditional RM-ANOVA requires a **complete case**, which needs to be measured for all conditions in each subject. However, IF-012 and 018 contain missing values for the posttest.
+
+\textcolor{red}{Scenario 1}: exclude all the subjects who missed the posttest, run omnibus RM-ANOVA for the remaining eight subjects with three conditions, check for the sphericity/circularity assumption, and may conduct the post-hoc analysis.
+
+\textcolor{red}{Scenario 2}: run RM-ANOVA for all 15 subjects with two conditions (pretest and intervention).
+
+## Scenario 1
+
+```{r rmANOVA-1}
+colnames(df)[which(names(df)=="Global")] <- "Response" #set the response variable
+dat <- droplevels(subset(df, !(ID %in% paste0("IF-0", c(12,17,18,19,20,21,22)))))
+# summary(aov(Response ~ Phase + Error(ID/Phase), data=dat)) #RM-ANOVA
+fit <- nlme::lme(fixed=Response ~ Phase,
+                 random=~1 | ID, #random intercept for each subject
+                 data=dat, method="ML")
+summary(fit)
+nlme::intervals(fit) #95% confidence intervals for the fixed effects
+```
+
+
+&nbsp;
+&nbsp;
+
+TL;DR, the below Mauchly's sphericity test passed, and RM-ANOVA may be valid to run.
+
+$\blacktriangleright$  The $p$-value of .403 for the conditions is not statistically significant at an alpha level of .05 ($F(2,14)=.97$). Hence, fail to reject the null hypothesis that the mean responses over three phases are the same. According to the analysis of eight subjects, the mean global health scores do not change before, during, or after the intervention.
+
+```{r ezANOVA}
+ez::ezANOVA(data=dat, wid=ID, within=.(Phase), dv=Response, type=3) #Mauchly's sphericity test
+```
+
+
+## Scenario 2
+
+```{r rmANOVA-2}
+dat2 <- droplevels(subset(df, Phase!="Posttest"))
+# summary(aov(Response ~ Phase + Error(ID/Phase), data=dat2)) #RM-ANOVA, same as below
+fit2 <- nlme::lme(fixed=Response ~ Phase,
+                  random=~1 | ID, #random intercept for each subject
+                  data=dat2, method="ML")
+summary(fit2)
+nlme::intervals(fit2) #95% confidence intervals for the fixed effects
+```
+
+RM-ANOVA result should be consistent with the linear mixed-effects regression `lme`.
+
+$\blacktriangleright$  The $p$-value of .0215 for the conditions is statistically significant at an alpha level of .05 ($F(1,14)=6.691=2.586736^2=t_{14}^2$). Hence, reject the null hypothesis. The mean global health scores increase after receiving IF treatment, according to the analysis of all 15 subjects.
+
+
+# 3. Bayesian: Using the "*BayesFactor*" package (v 0.9.12-4.6)
+
+The Bayes factor (BF) quantitatively measures the evidence for one statistical model versus another. In the case of the one-way linear mixed-effects model, we compare the full model (which assumes an effect) to the null model (which assumes no such effect). The Bayes factor value of about 3 is moderate evidence for an effect.
+
+```{r BF}
+#Scenario 1
+set.seed(277); anovaBF(Response ~ Phase + ID, whichRandom="ID", data=dat, progress=F)
+
+#Scenario 2
+set.seed(277); anovaBF(Response ~ Phase + ID, whichRandom="ID", data=dat2, progress=F)
+```
+
+$\blacktriangleright$ The data from eight subjects are $1/0.4237035\approx2.360141$ times more likely under the null model than they are under the full model, indicating anecdotal evidence of absence.
+
+$\blacktriangleright$ The data from all 15 subjects are $2.654517$ times more likely under the full model than they are under the null model, indicating anecdotal evidence for an effect.
+
+
+# 4. Bayesian: Within-subject credible interval
+
+Wei, Nathoo, and Masson (2023) proposed Bayesian credible intervals (CrI) for within-subject designs. The motivation is to remove the irrelevant between-subjects variability and reveal the actual pattern of the population means in within-subject designs.
+
+```{r rmBayes, eval=F}
+install.packages("rmBayes", type="binary") #need R version 4.0.1 or later
+```
+
+```{r CrI, message=F}
+library(rmBayes) #v 0.1.15; rstan v 2.32.5; macOS 13.6.3 M2
+rmHDI(dat, whichSubject="ID", whichLevel="Phase", seed=277)
+rmHDI(dat2, whichSubject="ID", whichLevel="Phase", seed=277)
+```
+
+
+\newpage
+# 5. Summary
+
+Change `colnames(df)[which(names(df)=="NAME")] <- "Response"` to set a new response variable and rerun the analyses.
+
+
+| **Global**         |                                          Scenario 1                                          |                                      |                              Scenario 2                              |                                       |
+|--------------------|:--------------------------------------------------------------------------------------------:|--------------------------------------|:--------------------------------------------------------------------:|---------------------------------------|
+| RM-ANOVA\newline   | $p=.40$, $F(2,14)=.97$                                                                      | Not significant.                     | $p=.022$, $F(1,14)=6.69$                                             | Significant at $\alpha=.05$.                          |
+| $\textit{BF}_{10}$ | 0.42                                                                                         | Anecdotal evidence of absence.       | 2.65                                                                 | Anecdotal evidence for an effect.     |
+| 95% CrI                | Pretest:[69.46, 84.80]\newline Intervention: [74.34, 89.68]\newline Posttest: [69.39, 84.73] | \newline 32% separation, given $n=8$. | Pretest: [70.94, 80.27]\newline Intervention: [78.03, 87.36]\newline | \newline 76% separation, given $n=15$. |
+
+
+
+
+
+| **Total**          |                                          Scenario 1                                          |                                      |                              Scenario 2                              |                                       |
+|--------------------|:--------------------------------------------------------------------------------------------:|--------------------------------------|:--------------------------------------------------------------------:|---------------------------------------|
+| RM-ANOVA\newline   | $p=.18$, $F(2,14)=1.93$                                                                      | Not significant.                     | $p=.0098$, $F(1,14)=8.94$                                            | Significant at $\alpha=.01$.                          |
+| $\textit{BF}_{10}$ | 0.69                                                                                         | Anecdotal evidence of absence.                         | 4.50                                                                 | Moderate evidence for an effect.      |
+| 95% CrI                | Pretest:[51.70, 55.57]\newline Intervention: [49.88, 53.75]\newline Posttest: [51.49, 55.37] | \newline 47% separation, given $n=8$. | Pretest: [49.35, 51.46]\newline Intervention: [47.50, 49.61]\newline | \newline 87% separation, given $n=15$. |
+
+
+&nbsp;
+&nbsp;
+
+
+| **Physical**       |                                          Scenario 1                                          |                                      |                              Scenario 2                              |                                       |
+|--------------------|:--------------------------------------------------------------------------------------------:|--------------------------------------|:--------------------------------------------------------------------:|---------------------------------------|
+| RM-ANOVA\newline   | $p=.11$, $F(2,14)=2.63$                                                                      | Not significant.                     | $p=.012$, $F(1,14)=8.36$                                             | Significant at $\alpha=.05$.                          |
+| $\textit{BF}_{10}$ | 0.98                                                                                         | Inconclusive.    | 4.19                                                                 | Moderate evidence for an effect.      |
+| 95% CrI                | Pretest:[78.12, 89.57]\newline Intervention: [85.08, 96.54]\newline Posttest: [80.99, 92.45] | \newline 61% separation, given $n=8$. | Pretest: [84.41, 92.28]\newline Intervention: [91.17, 99.04]\newline | \newline 86% separation, given $n=15$. |
+
+
+&nbsp;
+&nbsp;
+
+
+| **Fatigue**        |                                          Scenario 1                                          |                                      |                              Scenario 2                              |                                       |
+|--------------------|:--------------------------------------------------------------------------------------------:|--------------------------------------|:--------------------------------------------------------------------:|---------------------------------------|
+| RM-ANOVA\newline   | $p=.38$, $F(2,14)=1.02$                                                                      | Not significant.                     | $p=.11$, $F(1,14)=2.98$                                              | Not significant.                      |
+| $\textit{BF}_{10}$ | 0.43                                                                                         | Anecdotal evidence of absence.       | 0.92                                                                 | Inconclusive.                         |
+| 95% CrI                | Pretest:[24.87, 47.96]\newline Intervention: [16.09, 39.19]\newline Posttest: [20.46, 43.56] | \newline 38% separation, given $n=8$. | Pretest: [21.66, 34.93]\newline Intervention: [15.05, 28.33]\newline | \newline 50% separation, given $n=15$. |
+
+
+&nbsp;
+&nbsp;
+
+
+*References*
+
+Wei, Z., Nathoo, F. S., & Masson, M. E. J. (2023). Investigating the relationship between the Bayes factor and the separation of credible intervals. *Psychonomic Bulletin & Review*. https://doi.org/10.3758/s13423-023-02295-1
+
+Wei, Z., Nathoo, F. S., & Masson, M. E. J. (2022). *rmBayes: Performing Bayesian inference for repeated-measures designs*. R package version 0.1.15. https://cran.r-project.org/package=rmBayes
+

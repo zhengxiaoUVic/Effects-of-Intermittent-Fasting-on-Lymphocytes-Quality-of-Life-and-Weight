@@ -1,0 +1,236 @@
+---
+title: "Change Point Detection in Time Series"
+author: "Zhengxiao Wei, Farouk S. Nathoo, Eleah Stringer"
+date: "July 4 - September 29, 2023 (v2.2)"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-5em} 
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(changepoint)) {install.packages("changepoint")}
+if(!require(strucchange)) {install.packages("strucchange")}
+```
+
+
+Change-point analysis is a statistical method used to detect points in ordered data where the characteristics have changed. This detection could suggest a deterministic change in the mean, variance, distribution, or some other parameter of interest.
+
+
+## 1. Change in mean: Using the "*changepoint*" package (v 2.2.4)
+
+Generate sample data where the population means for the first and second half data are 0 and 2, respectively. Perform the change-in-mean analysis using the *cpt.mean* function. The expected change-point should be the midpoint, i.e., 10.
+
+```{r demo, fig.width=5, fig.height=3.5, message=FALSE}
+set.seed(277); demo <- c(rnorm(10, 0, 1), rnorm(10, 2, 1))
+plot(demo, type="o", col="red", xlab="Time", ylab="Simulated Data", 
+     main="Tutorial for Using the \"changepoint\" Package")
+
+library(changepoint)
+cpts(cpt.mean(demo, method="AMOC", penalty="MBIC"))
+```
+
+* The `"AMOC"` method stands for "At Most One Change", meaning that the function will identify at most one change point by default.
+
+* The `penalty` argument is to avoid overfitting. The modified Bayesian information criterion (`"MBIC"`) is used by default.
+
+\newpage
+The real data are from an experiment to study the effect of intermittent fasting (IF) on the lymphocyte measurements of 15 participants, each of whom was repeatedly measured before, during, and after the intervention.
+
+The goal is then to identify the change point in each participant's mean measurements and check whether it is after receiving the intervention.
+
+\textcolor{red}{Key assumption}: the package assumes a regularly spaced time series, but our pretest data (and some missing values during the intervention) do not satisfy this condition. Thus, we need to perform the **interpolation**, e.g., using the *approx* function.
+
+&nbsp;
+&nbsp;
+
+```{r interpolation}
+df <- read.csv("~/Downloads/IF_v3.1.csv", stringsAsFactors=T)
+dat <- df[!is.na(df$LYMP),] #IF-013 contains one missing value
+id <- unique(dat$ID); phases <- vector("list", length(id))  #pre-allocation
+ts_list <- replicate(length(id), list("x"=NULL, "y"=NULL, "raw"=NULL), simplify=F)
+names(ts_list) <- names(phases) <- id
+for (subj in id) {
+  phases[[subj]] <- c(tail(subset(dat, ID==subj & Phase==0)[,"Time"],1), #start of fasting
+                      tail(subset(dat, ID==subj & Phase==1)[,"Time"],1)) #start of posttest
+  for (trt in unique(dat$Phase)) { #interpolate within each phase
+    ts_raw <- subset(dat, ID==subj & Phase==trt)
+    if (length(na.omit(ts_raw$LYMP)) > 1) {
+      temp <- approx(x=ts_raw$Time, y=ts_raw$LYMP, 
+                     xout=c(min(ts_raw$Time):max(ts_raw$Time)))
+      temp$raw <- temp$x %in% ts_raw$Time
+    } else {temp <- list("x"=ts_raw$Time, "y"=ts_raw$LYMP, "raw"=T)}
+    ts_list[[subj]] <- lapply(names(ts_list[[subj]]), 
+                              function(x) c(ts_list[[subj]][[x]], temp[[x]]))
+    names(ts_list[[subj]]) <- c("x", "y", "raw")
+  }
+}
+```
+
+```{r cpt.AMOC, fig.width=6, fig.height=4}
+for (subj in id) {
+  ts <- ts_list[[subj]]
+  result <- cpt.mean(ts$y) #WRONG!
+  index <- cpts(result) #index of the change point in the data
+
+  par(mar=c(5,5,5,5))
+  #blue lines indicate states; dashed gray lines indicate phases
+  plot(result, type="o", cpt.col="blue", cpt.width=2, xaxt="n", ylim=c(5,130), main=subj,
+       xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+  abline(v=which(ts$x %in% phases[[subj]]), col="gray", lty=2, lwd=2)
+  axis(1, at=1:length(ts$y), labels=ts$x)
+  
+  cat(paste0("↑ The change point for ",subj," was Month ",ts$x[index],".\n"))
+  cat(paste0("  The mean lymphocyte counts were ",
+             round(param.est(result)$mean[1], 2)," and ",
+             round(param.est(result)$mean[1], 2),".\n"))
+  cat("  NOT FINALIZED YET!")
+}
+```
+
+&nbsp;
+&nbsp;
+
+# Do not jump to conclusions.
+# Do not jump to conclusions.
+# Do not jump to conclusions.
+
+
+\newpage
+Importantly, the function assumes that the variance of a time series is 1 ([Killick, 2020](https://youtu.be/WelmlZK5G2Y?t=4152)). We may need to **scale** the data.
+
+```{r cpt.AMOC.scale, fig.width=9, fig.height=4}
+par(mfrow=c(1,2))
+for (subj in id) {
+  ts <- ts_list[[subj]]
+  result <- cpt.mean(c(scale(ts$y)))
+  index <- cpts(result)
+  if(length(index) > 0) {
+    tex <- paste0("The change point was Month ",ts$x[index],".")
+  } else {tex <- paste0("No change point.")}
+  plot(result, type="o", cpt.col="purple", cpt.width=2, xaxt="n", ylim=c(-3,3),
+       xlab="Month", ylab="Scaled Lymphocyte Count", main=paste0(subj, ": change-in-mean"))
+  mtext(tex, side=1, adj=0, line=4)
+  abline(v=which(ts$x %in% phases[[subj]]), col="gray", lty=2, lwd=2)
+  axis(1, at=1:length(ts$y), labels=ts$x)
+}
+```
+
+
+\newpage
+If we want to find two or more change points, we should use the `"PELT"` method (Pruned Exact Linear Time). $\mathcal{O}(n^2)$ at worst.
+
+<!-- All *cpt.mean* methods require that the data are independent and identically distributed (i.i.d.) after each change point. This requirement does not necessarily conflict with the nature of time series, i.e., temporal dependence. -->
+
+<!-- When the `"PELT"` method identifies a change point, it suggests a shift in the underlying process that's generating the data. The assumption is that within each segment between change points, the data come from the same distribution and are independent. This justification does not preclude the possibility of dependence across different segments. -->
+
+```{r cpt.PELT}
+for (subj in id) {
+  ts <- ts_list[[subj]]
+  index <- cpts(cpt.mean(c(scale(ts$y)), method="PELT"))
+  if (length(index) == 0) {
+    cat(paste0("No change point for ",subj,".\n"))
+  } else if (length(index) == 1) {
+    cat(paste0("The change point for ",subj," was Month ",
+               ts$x[index],".\n"))
+  } else {
+    cat(paste0("The change points for ",subj," were Months ",
+               paste(ts$x[index], collapse=", "),".\n"))
+  }
+}
+```
+
+&nbsp;
+&nbsp;
+
+Other methods:
+
+* `"SegNeigh"`: Segment Neighborhood.
+
+A variation of the exhaustive search method looks at a subset of points around the maximum likelihood estimate of the change point rather than every possible point. It can be computationally expensive, $\mathcal{O}(Qn^2)$ where $Q$ specifies the maximum number of change points.
+
+&nbsp;
+
+* `"BinSeg"`: Binary Segmentation.
+
+It iteratively splits the data into two segments at the point that maximizes some criterion (e.g., the likelihood), then continues to split the resulting segments similarly until we detect no more significant changes. It tends to find the most significant changes first and can miss less significant ones nearby. $\mathcal{O}(n\log{n})$ in CPU time.
+
+
+\newpage
+## 2. Change in regression: Using the "*strucchange*" package (v 1.5-3)
+
+The *breakpoints* function implements the Bai-Perron method of multiple structural breakpoints. This global optimization procedure considers all possible data partitions into segments and finds the partition that minimizes the sum of squared residuals (RSS) or BIC within each segment.
+
+In addition to changes in mean, it seeks to identify points in time at which the coefficients of the linear regression model change.
+
+```{r demo2, fig.width=5, fig.height=3.5, message=FALSE}
+library(strucchange)
+breakpoints(demo ~ 1)$breakpoints #consistent with previous p. 1
+
+x <- c(1:20,22) #irregularly spaced (or missing value)
+set.seed(277); y <- c(0.5*x[1:10], 10-x[11:21]) + rnorm(21)
+fit <- breakpoints(y ~ x) #simple linear regression
+plot(y ~ x, xlab="Time", ylab="Simulated Data",
+     main="Tutorial for Using the \"strucchange\" Package")
+fit$breakpoints
+```
+
+```{r pre}
+subj <- "IF-013" #IF-009, 013, 017, (018), 019, 020, 022
+ts_raw <- subset(dat, ID==subj)
+table(dat$ID)
+```
+\tiny
+```{r str, error=TRUE}
+breakpoints(LYMP ~ Time, data=ts_raw)
+```
+\normalsize
+
+Though breakpoint detection can tackle irregularly spaced time series, our data must be longer to be split into segments.
+\textcolor{red}{Error}: minimum segment size must be greater than the number of regressors.
+
+
+```{r str.contd, fig.width=5, fig.height=3.5}
+ts <- ts_list[[subj]]
+n <- length(ts$y)
+(fit <- breakpoints(y ~ x, data=ts))
+
+#crosses indicate breakpoints at observation number
+bp.pch <- ifelse(1:n %in% fit$breakpoints, 4, 1)
+tex2 <- paste0("The change points were Months ",
+               paste(ts$x[fit$breakpoints], collapse=", "),".\n")
+par(mar=c(5,5,5,5))
+plot(c(1:n)/n, ts$y, xlab="Month", col=ifelse(ts$raw, "black", "gray"),
+     xaxt="n", pch=bp.pch, ylim=c(5,130), main=paste0(subj, ": change-in-regression"),
+     ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+mtext(tex2, side=1, adj=0, line=5); lines(fitted(fit), col="purple")
+abline(v=which(ts$x %in% phases[[subj]])/n, col="gray", lty=2, lwd=2)
+axis(1, at=c(1:n)/n, labels=ts$x); text(x=16.5/n, y=125, labels="IF", col="red")
+```
+
+```{r beamer, eval=F, include=F}
+fit0 <- breakpoints(c(scale(ts$y)) ~ 1, breaks=1, data=ts)
+index <- fit0$breakpoints
+if(length(index) > 0) {
+    tex <- paste0("The change point was Month ",ts$x[index],".")
+  } else {tex <- paste0("No change point.")}
+bp.pch0 <- ifelse(1:n %in% fit0$breakpoints, 4, 1)
+plot(c(1:n)/n, c(scale(ts$y)), xlab="Month", xaxt="n", cex=1.2,
+     pch=bp.pch0, ylim=c(-3,3), main=paste0(subj, ": change-in-mean"),
+     ylab="Scaled Lymphocyte Count", col=ifelse(ts$raw, "black", "gray"))
+mtext(tex, side=1, adj=0, line=4)
+text(x=16.5/n, y=2.75, labels="IF", col="red")
+lines(fitted(fit0), col="purple")
+abline(v=which(ts$x %in% phases[[subj]])/n, col="gray", lty=2, lwd=2)
+axis(1, at=c(1:n)/n, labels=ts$x)
+```
+

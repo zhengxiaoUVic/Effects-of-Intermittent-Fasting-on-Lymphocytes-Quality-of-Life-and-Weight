@@ -1,0 +1,22 @@
+IF-005: [typo] Day-30, 596.8 --> 59.8
+
+IF-007: [mislabel] last entry as "intervention" instead of "posttest"
+
+IF-010: five interventions and one posttest (dropped to 22.92)
+
+IF-012: [duplicate] 2-month posttest, 45.9;
+	[mislabel] last three entries should be posttest
+
+IF-013: [wrong sequence] Row 95, 2-month posttest (missing value); 
+			 Row 96, 3-month posttest;
+			 Row 97, 1-month posttest
+
+IF-018: [mislabel] last three entries should be posttest
+
+IF-019: [missing value] 48.0 
+
+
+IF-007 and 012: no autophagy data
+
+
+Lymphocyte_Time Tracking.xlsx summarizes the time point for each participant. The last pretest is set as Month 0. Most of the dates were not recorded at equal intervals, and I marked them as best I could. There is a duplicate entry on May 4, 2021 for IF-010, and I have corrected it.

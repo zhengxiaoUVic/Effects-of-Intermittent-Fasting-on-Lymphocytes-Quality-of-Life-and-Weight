@@ -1,0 +1,242 @@
+---
+title: "Estimating the Derivatives"
+author: "Zhengxiao Wei, Farouk S. Nathoo, Eleah Stringer"
+date: "August 1 - September 30, 2023 (v2.1)"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: 3
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{titling}
+  - \setlength{\droptitle}{-3em} 
+graphics: yes
+indent: false
+geometry: left=1.5cm,right=1.5cm,top=1cm,bottom=1.3cm
+fontsize: 11pt
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=T)
+if(!require(lattice)) {install.packages("lattice")}
+if(!require(doremi)) {install.packages("doremi")}
+if(!require(gratia)) {devtools::install_version("gratia", version="0.8.1")}
+if(!require(plotrix)) {install.packages("plotrix")}
+```
+
+
+# 1. Data description (same as IF v3.7.Rmd p. 1)
+
+The longitudinal data are from an experiment to study the effect of intermittent fasting (IF) on the lymphocyte measurements of 15 participants, each of whom was repeatedly measured before, during, and after the intervention. The data set (long format) consists of six columns:
+
+* **LYMP** - [numeric] lymphocyte count ($\times10^9$/L); lower values usually correspond to better outcomes;
+
+* **ATG** - [numeric] relative net LC3-II expression; higher levels are associated with increased autophagy;
+
+* **ID** - [factor] participant identifier; 15 levels;
+
+* **Time** - [numeric] centered time point, with a frequency of 30 days, treating the **last** pretest as Month 0;
+
+* **Time_Within_Phase** - [numeric] time point within each phase, starting from Month 0;
+
+* **Phase** - [numeric] treatment identifier; 0 as pretest, 1 as intervention, and 2 as posttest.
+
+
+```{r EDA, fig.width=8, fig.height=4.7}
+df <- read.csv("~/Downloads/IF_v3.1.csv", stringsAsFactors=T)
+lattice::xyplot(LYMP ~ Time | ID, data=df, group=Phase, type=c("p","r"), layout=c(5,3),
+                index.cond=list(c(6:9,11,10,12:15,1:5)), #change panel order
+                xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+```
+
+
+\newpage
+# 2. Modeling
+
+The hypothesis is that IF can help patients lower their lymphocyte count. The objectives are then to fit a curve (three options: the "*doremi*", "*stats*", and "*\textcolor{red}{mgcv}*" packages) for each subject's measurement and estimate the first and second derivatives of the function at Months 0 and 1 (representing the rate of change and the rate of change of the rate of change).
+
+* First Derivative, e.g., \textcolor{blue}{displacement} $\rightharpoonup$ \textcolor{blue}{velocity}
+
+Positive derivatives indicate the function is increasing, and negative derivatives indicate the function is decreasing.
+
+* Second Derivative, e.g., \textcolor{blue}{velocity} $\rightharpoonup$ \textcolor{blue}{acceleration}
+
+If the second derivative is positive at a point, the curve is concave upward (e.g., $\cup$-shape); if the second derivative is negative, the curve is concave downward (e.g., $\cap$-shape).
+
+&nbsp;
+
+A point is a local minimum where the first derivative is zero and the second derivative is positive. Similarly, if the first derivative is zero and the second derivative is negative, that point is a local maximum. If the second derivative is zero and changes sign at a point, that point is an **inflection point** where the curve changes concavity.
+
+## 2.1 Using the "*doremi*" package (v 1.0.0)
+
+The *calculate.gold* function calculates the $n$th derivative at some measurement points (called `embedding`s) using the generalized orthogonal local derivative (GOLD) method, which is applicable to irregularly spaced data.
+
+```{r GOLD, fig.width=4.5, fig.height=3}
+dat <- df[!is.na(df$LYMP),] #IF-013 contains one missing value
+s13 <- subset(dat, ID=="IF-013")
+
+der_est <- doremi::calculate.gold(time=s13$Time, signal=s13$LYMP, embedding=6, n=2)
+plot(der_est$dtime, der_est$dsignal[,2], main="Rate of Change for IF-013",
+     xlab="Month", ylab="First Derivative of Lymphocyte Count")
+mtext("Embedding = 6", side=1, adj=0, line=4)
+```
+
+\newpage
+## 2.2 Using the default "*stats*" package (v 4.3.1)
+
+The *smooth.spline* function involves fitting a cubic smoothing spline to the data and then evaluating the derivative of the spline. **Note** that the fitted curve will be different from the GOLD one in Section 2.1 (and 2.3), but the same as the *calculate.fda* function.
+
+```{r spline}
+spline_fit <- smooth.spline(s13$Time, s13$LYMP) #fit a spline (trying to specify df or spar)
+der_est_1 <- predict(spline_fit, deriv=1)$y #compute the first derivative
+# der_est <- doremi::calculate.fda(time=s13$Time, signal=s13$LYMP)$dsignal[,2] #same
+
+names(der_est_1) <- s13$Time
+round(der_est_1, 3)
+```
+
+The *smooth.spline* function does **not** provide confidence intervals directly. Otherwise, one must fit a smoothing spline to a bootstrap sample, obtain the predicted values, and then compute the standard errors and confidence intervals for the fitted values.
+
+
+## 2.3 Using the default "*mgcv*" package (v 1.9-0)
+
+The *gam* function fits generalized additive models (GAM), which includes smoothing splines as a special case and directly provides confidence intervals for the smoothing terms. Not all GAMs are spline fits (since other smoothers can be used). The argument `bs="cr"` specifies the use of cubic regression splines.
+
+**Note** that the *smooth.spline* function in Section 2.2, unlike GAM, fits a smoothing spline by optimizing the smoothing parameter using generalized cross-validation (or other criteria). However, one can attempt to make the splines fitted in Sections 2.2 and 2.3 as close as possible by setting the basis dimension `s(..., k)` and degrees of freedom `smooth.spline(..., df)` manually to match their effective degrees of freedom (edf).
+
+```{r gam, fig.width=5, fig.height=3.5}
+gam_fit <- mgcv::gam(s13$LYMP ~ s(s13$Time, bs="cr", k=6), method="REML")
+par(mar=c(5,5,5,5))
+plot(gam_fit, main="GAM Fit for IF-013", xlab="Month", ylab="Smoother")
+points(s13$Time, s13$LYMP-mean(s13$LYMP), col="red") #Add the original data points to the fit
+cat("smooth.spline.df: ", spline_fit$df, "; gam.edf: ", summary(gam_fit)$edf, ".", sep="")
+```
+
+```{r test.k, include=F, warning=F, eval=F}
+num <- nrow(s13); edf <- numeric(num)
+for (j in 1:num) {
+  temp <- mgcv::gam(s13$LYMP ~ s(s13$Time, bs="cr", k=j), method="REML")
+  edf[j] <- summary(temp)$edf
+}
+names(edf) <- paste0("k=",1:num); edf
+```
+
+
+# 3. Summary
+
+Fit a generalized additive model to each subject's measurement using the *gam* function.
+
+Plot results along with the pointwise 95% confidence intervals. Estimate the first derivative (rate of change) and second derivative (concavity – rate of change in the slope) at desired months (e.g., Months 0 and 1); obtain 95% confidence intervals for derivatives and annotate the plots with these confidence intervals for each subject.
+
+\textcolor{purple}{Limitation}: The interplay between $k$ (the dimension of the basis used to represent the smoother) and the penalty will determine the final shape of the curve, especially oscillations near the boundaries. Thus, the derivative estimates may differ when different $k$, `method`, and packages are chosen.
+
+```{r plot, fig.width=9, fig.height=4}
+months_to_der <- c(0, 1) #Months at which you want the derivatives to be computed
+par(mfrow=c(1,2))
+
+for (subj in unique(dat$ID)) {
+  sub <- subset(dat, ID==subj)
+  phases <- c(tail(subset(sub, Phase==0)[,"Time"],1), #start of fasting
+              tail(subset(sub, Phase==1)[,"Time"],1)) #start of posttest
+
+  fit <- mgcv::gam(LYMP ~ s(Time, bs="cr", k=6), data=sub, method="REML") #fit a GAM
+  xvals <- seq(min(sub$Time), max(sub$Time), length.out=100)
+  spline <- predict(fit, newdata=data.frame("Time"=xvals), type="response")
+  
+  pred <- predict(fit, type="response", se.fit=T) #get standard errors
+  sub$fit <- pred$fit
+  sub$se <- pred$se.fit
+  sub$lwr <- sub$fit - 1.96 * sub$se
+  sub$upr <- sub$fit + 1.96 * sub$se #compute 95% CIs
+
+  par(mar=c(5,5,5,5))
+  plot(sub$Time, sub$LYMP, ylim=c(0,140), xlim=c(-15,6),
+       main=paste0("GAM Fit for ", subj, ", edf ", round(summary(fit)$edf, 1)),
+       xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+  for(i in 1:nrow(sub)) { #add pointwise CIs
+    lines(c(sub$Time[i], sub$Time[i]), c(sub$lwr[i], sub$upr[i]), col="blue")
+  }
+  lines(xvals, spline, col="purple")
+  abline(v=phases, col="gray", lty=2)
+  
+  der1 <- gratia::derivatives(fit, data=data.frame("Time"=months_to_der)) #derivatives
+  der2 <- gratia::derivatives(fit, order=2, data=data.frame("Time"=months_to_der))
+  tbl <- data.frame("Est"=c(der1$derivative, der2$derivative),
+                    "Lwr"=c(der1$lower, der2$lower),
+                    "Upr"=c(der1$upper, der2$upper))
+  rownames(tbl) <- paste0(rep(c("1st@","2nd@"), each=length(months_to_der)), months_to_der)
+  tbl <- data.frame(apply(tbl, 2, function(x) formatC(x, format="f", digits=1)))
+  plotrix::addtable2plot(x=-13, y=100, table=tbl, bty="n", display.rownames=T, cex=.7)
+}
+```
+
+```{r beamer, include=F, eval=F}
+sub <- subset(dat, ID=="IF-013")
+months_to_der <- c(0, 1) #Months at which you want the derivatives to be computed
+phases <- c(tail(subset(sub, Phase==0)[,"Time"],1), #start of fasting
+            tail(subset(sub, Phase==1)[,"Time"],1)) #start of posttest
+fit <- mgcv::gam(LYMP ~ s(Time, bs="cr", k=6), data=sub, method="REML") #fit a GAM
+pred <- predict(fit, type="response", se.fit=T) #get standard errors
+sub$fit <- pred$fit
+sub$se <- pred$se.fit
+sub$lwr <- sub$fit - 1.96 * sub$se
+sub$upr <- sub$fit + 1.96 * sub$se #compute 95% CIs
+der1 <- gratia::derivatives(fit, data=data.frame("Time"=months_to_der)) #compute the first derivative
+der2 <- gratia::derivatives(fit, order=2, data=data.frame("Time"=months_to_der)) #compute the second derivative
+tbl <- data.frame("Est"=c(der1$derivative, der2$derivative),
+                  "Lwr"=c(der1$lower, der2$lower),
+                  "Upr"=c(der1$upper, der2$upper))
+rownames(tbl) <- paste0(rep(c("1st@","2nd@"), each=length(months_to_der)), months_to_der)
+tbl <- data.frame(apply(tbl, 2, function(x) formatC(x, format="f", digits=1)))
+xvals <- seq(min(sub$Time), max(sub$Time), length.out=100)
+spline <- predict(fit, newdata=data.frame("Time"=xvals), type="response")
+par(mar=c(5,5,5,5))
+plot(sub$Time, sub$LYMP, ylim=c(0,140), xlim=c(-15,6),
+     main=paste0("IF-013: GAM Fit", ", edf ", round(summary(fit)$edf, 1)), cex=1.2,
+     xlab="Month", ylab=expression(paste("Lymphocyte Count (\u00d7",10^9/L,")")))
+for(i in 1:nrow(sub)) { #add pointwise CIs
+    lines(c(sub$Time[i], sub$Time[i]), c(sub$lwr[i], sub$upr[i]), col="blue", lwd=2)
+}
+lines(xvals, spline, col="purple", lwd=2)
+abline(v=phases, col="gray", lty=2)
+text(x=1.5, y=125, labels="IF", col="red", cex=1.2)
+plotrix::addtable2plot(x=-8, y=101, table=tbl, bty="n", ypad=2, display.rownames=T) #SAVE 750x700
+```
+
+&nbsp;
+
+\begin{table}[h]
+\begin{tabular}{rrrr}
+\textbf{Month 1}                     & negative 2nd  & not significant         & positive 2nd \\ \cline{2-4} 
+\multicolumn{1}{r|}{negative 1st}    &               & 017, 019                &              \\
+\multicolumn{1}{r|}{not significant} &               & 004, 022                & 006          \\
+\multicolumn{1}{r|}{positive 1st}    & 013, 018, 020 & \ \ 002, 005, 007, 012, 021 & 009, 010    
+\end{tabular}
+\end{table}
+
+&nbsp;
+
+$\blacktriangleright$ In summary, IF-002, 005, 007, 012, and 021 experienced a steady rise after IF treatment. $\blacktriangleright$ IF-004 and 022 have stable lymphocytes. $\blacktriangleright$ IF-017 and 019 experienced a steady decrease. $\blacktriangleright$ IF-013, 018, and 020 have slowed lymphocyte increase. $\blacktriangleright$ IF-009 and 010 have sped up. $\blacktriangleright$ IF-006 continued to increase after a plateau.
+
+```{r test.plot, include=F, eval=F}
+for (subj in unique(dat$ID)) {
+  sub <- subset(dat, ID==subj)
+  fit <- mgcv::gam(LYMP ~ s(Time, bs="cr", k=6), data=sub, method="REML") #fit a GAM
+  
+  par(mar=c(5,5,5,5))
+  plot(fit,
+       main=paste0("GAM Fit for ", subj, ", edf ", round(summary(fit)$edf, 1)))
+  points(sub$Time, sub$LYMP-mean(sub$LYMP), col="red") #Add the original data points to the fit
+}
+```
+
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+&nbsp;
+
+*Reference* for Section 2.1
+
+Denis, M., Adriana, U., & Delphine, C. (2021). Estimation of the derivatives. https://cran.r-project.org/web/packages/doremi/vignettes/derivatives.html
+
